@@ -614,8 +614,8 @@ label.f input:focus,label.f textarea:focus{outline:2px solid var(--accent);outli
 (function(){
   "use strict";
   var COND = {NE:"New",FN:"Factory new",NS:"New surplus",OH:"Overhauled",SV:"Serviceable",RP:"Repaired",AR:"As removed","":"Unspecified"};
-  var EMAIL="sales@liberty-aero.com", WA="50764415773", MAX=60, BULK=10;
-  var DATA=null, NORM=null, pending=null;
+  var EMAIL="sales@liberty-aero.com", WA="50764415773", BULK=10;
+  var LIVE=/(^|\.)netlify\.app$|(^|\.)liberty-aero\.com$/i.test(location.hostname);
   var $=function(id){return document.getElementById(id)};
   var esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})};
   var norm=function(s){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,"")};
@@ -659,58 +659,73 @@ label.f input:focus,label.f textarea:focus{outline:2px solid var(--accent);outli
   }
   paintMix({"NS":39199,"NE":47218,"AR":4666,"SV":2867,"OH":703,"RP":3,"FN":2},94658);
 
-  /* ---------- data ---------- */
-  fetch("parts.json").then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(function(d){
-    DATA=d; NORM=new Array(d.length);
-    var avail=0,lines=0,mix={};
-    for(var i=0;i<d.length;i++){
-      NORM[i]=norm(d[i][0]);
-      var rows=d[i][2];
-      for(var j=0;j<rows.length;j++){
-        var c=rows[j][0]||"--"; mix[c]=(mix[c]||0)+1; lines++; if(rows[j][2]===0) avail++;
+  /*ENGINE*/
+  function makeEngine(PARTS){
+    var MIN=4, PREFIX_MIN=5, MAX=20, BULK=10;
+    var norm=function(s){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,"")};
+    var N=new Array(PARTS.length), IDX=new Map();
+    for(var i=0;i<PARTS.length;i++){N[i]=norm(PARTS[i][0]); if(!IDX.has(N[i])) IDX.set(N[i],i)}
+    function single(raw){
+      var q=String(raw||"").trim().slice(0,80), n=norm(q), Q=q.toUpperCase(), words=/[A-Z]{4,}/.test(Q);
+      if(n.length<MIN&&!words) return {mode:"short",n:n,more:false,items:[]};
+      var hits=[], seen={}, more=false;
+      function add(i){ if(seen[i]) return; if(hits.length>=MAX){more=true;return} seen[i]=1; hits.push(i) }
+      if(n.length>=MIN){
+        var e=IDX.get(n); if(e!==undefined) add(e);
+        if(n.length>=PREFIX_MIN){ for(var k=0;k<N.length&&!more;k++){ if(N[k].indexOf(n)===0) add(k) } }
       }
+      if(words&&!more){
+        var W=Q.split(/\s+/).filter(function(w){return w.length>=2});
+        for(var k=0;k<PARTS.length&&!more;k++){
+          var d=PARTS[k][1].toUpperCase(), ok=true;
+          for(var w=0;w<W.length;w++){ if(d.indexOf(W[w])<0){ok=false;break} }
+          if(ok) add(k);
+        }
+      }
+      return {mode:"single",n:n,more:more,items:hits.map(function(i){return PARTS[i]})};
     }
-    $("s-pn").textContent=fmt(d.length);
-    $("co-pn").textContent=fmt(d.length);
-    $("s-avail").textContent=fmt(avail);
-    $("s-availm").style.width=(avail/lines*100).toFixed(1)+"%";
-    paintMix(mix,lines);
-    var ex=["113W6181-20","01-0790906-00","016493-000"].filter(function(p){return lookup(norm(p))>-1});
-    $("examples").innerHTML=ex.length?"Try: "+ex.map(function(p){return '<button type="button" class="chip-ex" data-ex="'+esc(p)+'">'+esc(p)+'</button>'}).join(""):"";
-    if(pending!==null){run(pending);pending=null}
-  }).catch(function(){
-    $("results").innerHTML='<div class="empty"><h3>Stock list did not load</h3><p>Refresh the page. You can still send part numbers to '+esc(EMAIL)+' and we quote them directly.</p></div>';
-  });
+    function bulk(list){
+      var uniq=[], seen={};
+      (list||[]).forEach(function(t){ t=String(t).trim().toUpperCase().slice(0,60); var k=norm(t); if(k&&!seen[k]){seen[k]=1;uniq.push(t)} });
+      var chk=uniq.slice(0,BULK), items=[], missing=[];
+      chk.forEach(function(t){ var i=IDX.get(norm(t)); if(i!==undefined) items.push(PARTS[i]); else missing.push(t) });
+      return {mode:"bulk",items:items,missing:missing,checked:chk};
+    }
+    return {single:single,bulk:bulk,count:PARTS.length,has:function(p){return IDX.has(norm(p))}};
+  }
+  /*ENDENGINE*/
 
-  function lookup(n){ // binary search would need sorted norms; linear is fast enough (~80k)
-    for(var i=0;i<NORM.length;i++) if(NORM[i]===n) return i;
-    return -1;
+  /* ---------- data: live site asks the server; private preview searches a local copy ---------- */
+  var ENG=null, seq=0;
+  var EXAMPLES=["113W6181-20","01-0790906-00","016493-000"];
+  function showExamples(list){
+    $("examples").innerHTML=list.length?"Try: "+list.map(function(p){return '<button type="button" class="chip-ex" data-ex="'+esc(p)+'">'+esc(p)+'</button>'}).join(""):"";
+  }
+  var READY;
+  if(LIVE){ READY=Promise.resolve(); showExamples(EXAMPLES) }
+  else {
+    READY=fetch("parts.json").then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(function(d){
+      ENG=makeEngine(d);
+      var avail=0,lines=0,mix={};
+      for(var i=0;i<d.length;i++){ var rows=d[i][2]; for(var j=0;j<rows.length;j++){ var c=rows[j][0]||"--"; mix[c]=(mix[c]||0)+1; lines++; if(rows[j][2]===0) avail++; } }
+      $("s-pn").textContent=fmt(d.length); $("co-pn").textContent=fmt(d.length);
+      $("s-avail").textContent=fmt(avail); $("s-availm").style.width=(avail/lines*100).toFixed(1)+"%";
+      paintMix(mix,lines);
+      showExamples(EXAMPLES.filter(function(p){return ENG.has(p)}));
+    });
+  }
+  function query(t){
+    if(LIVE){
+      var u=t.length>1?"/api/search?pns="+encodeURIComponent(t.join(",")):"/api/search?q="+encodeURIComponent(t[0]);
+      return fetch(u,{headers:{"accept":"application/json"}}).then(function(r){ if(r.status===429) throw "rate"; if(!r.ok) throw r.status; return r.json() });
+    }
+    return READY.then(function(){ return t.length>1?ENG.bulk(t):ENG.single(t[0]) });
   }
 
-  /* ---------- search ---------- */
-  function search(raw){
-    var q=raw.trim(); if(!q) return {hits:[],total:0};
-    var n=norm(q), words=q.toUpperCase().split(/\s+/).filter(Boolean);
-    var exact=[],pre=[],con=[],desc=[];
-    for(var i=0;i<DATA.length;i++){
-      var p=NORM[i];
-      if(n.length>=2){
-        if(p===n){exact.push(i);continue}
-        if(p.indexOf(n)===0){pre.push(i);continue}
-        if(n.length>=3&&p.indexOf(n)>-1){con.push(i);continue}
-      }
-      if(words.length&&/[A-Z]{3,}/.test(q.toUpperCase())){
-        var d=DATA[i][1].toUpperCase(),ok=true;
-        for(var w=0;w<words.length;w++){if(d.indexOf(words[w])<0){ok=false;break}}
-        if(ok) desc.push(i);
-      }
-    }
-    var all=exact.concat(pre,con,desc);
-    return {hits:all.slice(0,MAX),total:all.length,n:n};
-  }
+  /* ---------- render ---------- */
+  var MAX=20;
   function hl(pn,n){
     if(!n) return esc(pn);
-    // map normalized match back onto the raw P/N characters
     var idx=[],s="";
     for(var i=0;i<pn.length;i++){var ch=pn[i].toUpperCase();if(/[A-Z0-9]/.test(ch)){idx.push(i);s+=ch}}
     var at=s.indexOf(n); if(at<0) return esc(pn);
@@ -719,9 +734,8 @@ label.f input:focus,label.f textarea:focus{outline:2px solid var(--accent);outli
   }
   function rowsHTML(list,n){
     var h="";
-    list.forEach(function(i){
-      var it=DATA[i], rows=it[2];
-      rows.forEach(function(r,k){
+    list.forEach(function(it){
+      it[2].forEach(function(r,k){
         h+='<tr class="'+(k===0?"group-first":"sub")+'">'+
           '<td class="pn">'+hl(it[0],n)+'</td>'+
           '<td class="desc">'+esc(it[1])+'</td>'+
@@ -747,34 +761,45 @@ label.f input:focus,label.f textarea:focus{outline:2px solid var(--accent);outli
     }
     return t;
   }
+  function msg(tag,title,body,btn){
+    return '<div class="empty">'+(tag?'<div class="tag'+(tag.crit?' crit':'')+'">'+esc(tag.t)+'</div>':'')+'<h3>'+esc(title)+'</h3><p>'+body+'</p>'+(btn||'')+'</div>';
+  }
   function run(raw){
-    if(!DATA){pending=raw;$("results").innerHTML='<div class="empty"><h3>Loading stock list…</h3><p>Your search runs as soon as the inventory loads.</p></div>';return}
     var t=tokens(raw), out=$("results");
     if(!t.length){out.innerHTML="";return}
-    if(t.length>1){ // bulk check
-      var found=[],miss=[],seen={},uniq=[];
-      t.forEach(function(tok){var n=norm(tok);if(!n||seen[n])return;seen[n]=1;uniq.push(tok.toUpperCase())});
-      var chk=uniq.slice(0,BULK), rest=uniq.slice(BULK);
-      chk.forEach(function(tok){var i=lookup(norm(tok));if(i>-1)found.push(i);else miss.push(tok)});
-      out.innerHTML='<div class="res-head"><h2>Bulk check · '+found.length+' of '+chk.length+' found</h2><span class="meta">Exact P/N match · max '+BULK+' per check</span></div>'+
-        (found.length?rowsHTML(found,null):"")+(miss.length?missingHTML(miss):"")+
-        (rest.length?'<div class="empty" style="margin-top:22px"><div class="tag">Bulk limit</div><h3>'+rest.length+' more P/N'+(rest.length>1?'s':'')+' not checked</h3><p>Bulk checks cover '+BULK+' part numbers at a time. Send the rest as an RFQ and the desk quotes the full list.</p><button class="btn" type="button" data-src="'+esc(JSON.stringify(rest))+'">Add '+rest.length+' to RFQ</button></div>':"");
-    } else {
-      var r=search(t[0]);
-      if(!r.total){
-        out.innerHTML='<div class="empty"><div class="tag crit">No match in stock list</div><h3>'+esc(t[0].toUpperCase())+' is not in listed stock</h3><p>Our list covers what is on the shelf with our network today. Send the part number and we will source it.</p><button class="btn" type="button" data-src="'+esc(JSON.stringify([t[0].toUpperCase()]))+'">Add '+esc(t[0].toUpperCase())+' to RFQ</button></div>';
+    var uniq=[],seen={};
+    t.forEach(function(tok){var k=norm(tok);if(k&&!seen[k]){seen[k]=1;uniq.push(tok.toUpperCase())}});
+    var bulkMode=t.length>1, chk=bulkMode?uniq.slice(0,BULK):[t[0]], rest=bulkMode?uniq.slice(BULK):[];
+    var my=++seq;
+    out.setAttribute("aria-busy","true");
+    query(chk).then(function(res){
+      if(my!==seq) return;
+      if(res.mode==="short"){
+        out.innerHTML=msg(null,"Keep typing","Enter at least 4 characters of the part number, or a description word such as SEAL or FILTER.");
+      } else if(res.mode==="bulk"){
+        out.innerHTML='<div class="res-head"><h2>Bulk check · '+res.items.length+' of '+res.checked.length+' found</h2><span class="meta">Exact P/N match · max '+BULK+' per check</span></div>'+
+          (res.items.length?rowsHTML(res.items,null):"")+(res.missing.length?missingHTML(res.missing):"")+
+          (rest.length?'<div class="empty" style="margin-top:22px"><div class="tag">Bulk limit</div><h3>'+rest.length+' more P/N'+(rest.length>1?'s':'')+' not checked</h3><p>Bulk checks cover '+BULK+' part numbers at a time. Send the rest as an RFQ and the desk quotes the full list.</p><button class="btn" type="button" data-src="'+esc(JSON.stringify(rest))+'">Add '+rest.length+' to RFQ</button></div>':"");
+      } else if(!res.items.length){
+        var P=t[0].toUpperCase();
+        out.innerHTML=msg({t:"No match in stock list",crit:true},P+" is not in listed stock","Our list covers what is on the shelf with our network today. Send the part number and we will source it.",'<button class="btn" type="button" data-src="'+esc(JSON.stringify([P]))+'">Add '+esc(P)+' to RFQ</button>');
       } else {
-        out.innerHTML='<div class="res-head"><h2>Results · '+fmt(r.total)+'</h2><span class="meta">'+(r.total>MAX?"Showing first "+MAX+". Type more of the P/N to narrow.":"P/N matches first, then description matches")+'</span></div>'+rowsHTML(r.hits,r.n);
+        out.innerHTML='<div class="res-head"><h2>Results · '+(res.more?MAX+"+":res.items.length)+'</h2><span class="meta">'+(res.more?"Showing first "+MAX+". Type more of the P/N to narrow.":"P/N matches first, then description matches")+'</span></div>'+rowsHTML(res.items,res.n);
       }
-    }
-    syncButtons();
+      syncButtons();
+    }).catch(function(err){
+      if(my!==seq) return;
+      out.innerHTML=err==="rate"
+        ? msg({t:"Slow down"},"Too many searches in a short time","Wait a minute and search again, or send your list as an RFQ and the desk checks it for you.")
+        : msg({t:"Search unavailable",crit:true},"Search did not respond","Refresh the page. You can still send part numbers to "+esc(EMAIL)+" and we quote them directly.");
+    }).then(function(){ if(my===seq) out.removeAttribute("aria-busy") });
   }
 
   var timer=null;
   $("q").addEventListener("input",function(e){
     clearTimeout(timer); var v=e.target.value;
-    if(v.trim().length<2){return}
-    timer=setTimeout(function(){run(v)},140);
+    if(norm(v).length<4){return}
+    timer=setTimeout(function(){run(v)},LIVE?260:140);
   });
   $("q").addEventListener("paste",function(e){
     var t=(e.clipboardData||window.clipboardData);t=t&&t.getData("text");
@@ -877,7 +902,6 @@ label.f input:focus,label.f textarea:focus{outline:2px solid var(--accent);outli
     if(f.notes){L.push("","Notes: "+f.notes)}
     return L.join("\n");
   }
-  var LIVE=/(^|\.)netlify\.app$|(^|\.)liberty-aero\.com$/i.test(location.hostname);
 
   $("rfqf").addEventListener("submit",function(e){
     e.preventDefault();
