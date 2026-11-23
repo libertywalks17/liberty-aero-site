@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /parts.json
+
+Sitemap: https://www.liberty-aero.com/sitemap.xml
