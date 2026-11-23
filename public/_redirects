@@ -1,2 +1,20 @@
-/contact  /#contact  301
-/company  /#company  301
+# New site pages
+/contact             /#contact   301
+/company             /#company   301
+# Old WordPress / WooCommerce URLs -> new site (keeps Google traffic and old links working)
+/about-us            /#company   301
+/about-us/*          /#company   301
+/contact/*           /#contact   301
+/shop                /           301
+/shop/*              /           301
+/product/*           /           301
+/product-category/*  /           301
+/product-tag/*       /           301
+/cart                /           301
+/cart/*              /           301
+/checkout            /           301
+/checkout/*          /           301
+/my-account          /           301
+/my-account/*        /           301
+/error               /           301
+/error/*             /           301
