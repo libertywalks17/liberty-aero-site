@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /api/
 
-Sitemap: https://www.liberty-aero.com/sitemap.xml
+Sitemap: https://liberty-aero.com/sitemap.xml
